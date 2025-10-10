@@ -78,17 +78,21 @@ class NsukChatService
     {
         try {
             $keywords = $this->extractKeywords($message);
-            
+
             if (empty($keywords)) {
+                Log::info('Database search: No keywords found in message');
                 return null;
             }
+
+            Log::info('Database search: Keywords found - ' . implode(', ', $keywords));
 
             // Try exact question match first
             $knowledge = NsukKnowledge::where('is_active', true)
                 ->where('question', 'LIKE', "%{$message}%")
                 ->first();
-            
+
             if ($knowledge) {
+                Log::info('Database search: Exact question match found');
                 return $knowledge->answer;
             }
 
@@ -102,6 +106,8 @@ class NsukChatService
                 })
                 ->get();
 
+            Log::info('Database search: Found ' . count($results) . ' potential matches');
+
             // Score results based on keyword matches
             $bestMatch = null;
             $highestScore = 0;
@@ -114,8 +120,8 @@ class NsukChatService
 
                 // Bonus points for similar question length (prevents partial matches)
                 $lengthDiff = abs(strlen($messageLower) - strlen($questionLower));
-                if ($lengthDiff < 10) {
-                    $score += 2;
+                if ($lengthDiff < 8) {
+                    $score += 3;
                 }
 
                 // Count matching keywords
@@ -124,7 +130,7 @@ class NsukChatService
                     $keywordLower = strtolower($keyword);
                     // Higher score for question matches
                     if (strpos($questionLower, $keywordLower) !== false) {
-                        $score += 3;
+                        $score += 4;
                         $matchedKeywords++;
                     }
                     // Lower score for keyword matches
@@ -134,11 +140,31 @@ class NsukChatService
                     }
                 }
 
-                // Require at least 50% of keywords to match
+                // Require at least 60% of keywords to match
                 $matchRatio = count($keywords) > 0 ? $matchedKeywords / count($keywords) : 0;
-                if ($matchRatio < 0.5) {
+                if ($matchRatio < 0.6) {
                     $score = 0; // Disqualify poor matches
                 }
+
+                // Additional check: if the result doesn't contain at least 2 of the main keywords, disqualify
+                $mainKeywords = array_filter($keywords, function($word) {
+                    return strlen($word) > 3; // Only consider keywords longer than 3 characters
+                });
+
+                if (count($mainKeywords) >= 2) {
+                    $mainMatches = 0;
+                    foreach ($mainKeywords as $mainKeyword) {
+                        $mainKeywordLower = strtolower($mainKeyword);
+                        if (strpos($questionLower, $mainKeywordLower) !== false || strpos($keywordsLower, $mainKeywordLower) !== false) {
+                            $mainMatches++;
+                        }
+                    }
+                    if ($mainMatches < 2) {
+                        $score = 0; // Disqualify if less than 2 main keywords match
+                    }
+                }
+
+                Log::info('Database search: Question "' . $result->question . '" scored ' . $score . ' points');
 
                 if ($score > $highestScore) {
                     $highestScore = $score;
@@ -146,9 +172,15 @@ class NsukChatService
                 }
             }
 
-            // Only return if we have a good match (at least 3 points)
-            return ($bestMatch && $highestScore >= 3) ? $bestMatch->answer : null;
-            
+            // Only return if we have a good match (at least 4 points)
+            if ($bestMatch && $highestScore >= 4) {
+                Log::info('Database search: Best match found with ' . $highestScore . ' points');
+                return $bestMatch->answer;
+            }
+
+            Log::info('Database search: No good match found (highest score: ' . $highestScore . ')');
+            return null;
+
         } catch (\Exception $e) {
             Log::error('Database search error: ' . $e->getMessage());
             return null;
@@ -162,9 +194,11 @@ class NsukChatService
     {
         try {
             if (!$this->groqApiKey) {
-                Log::warning('Groq API key not configured');
+                Log::warning('Online search: Groq API key not configured');
                 return null;
             }
+
+            Log::info('Online search: Starting search for message');
 
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $this->groqApiKey,
@@ -188,13 +222,15 @@ class NsukChatService
             if ($response->successful()) {
                 $data = $response->json();
                 if (isset($data['choices'][0]['message']['content'])) {
-                    return trim($data['choices'][0]['message']['content']);
+                    $answer = trim($data['choices'][0]['message']['content']);
+                    Log::info('Online search: Successfully found answer');
+                    return $answer;
                 }
             }
 
             // Log detailed error information
-            Log::warning('Online search failed: ' . $response->status());
-            Log::warning('Error response: ' . $response->body());
+            Log::warning('Online search: Failed with status ' . $response->status());
+            Log::warning('Online search: Error response: ' . $response->body());
             return null;
 
         } catch (\Exception $e) {

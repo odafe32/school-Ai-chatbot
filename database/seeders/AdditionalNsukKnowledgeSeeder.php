@@ -102,6 +102,13 @@ class AdditionalNsukKnowledgeSeeder extends Seeder
                 'keywords' => 'how many courses, number of courses, total courses, course count',
                 'category' => 'Academics',
                 'is_active' => true
+            ],
+            [
+                'question' => 'How many staff do we have?',
+                'answer' => 'I don\'t have specific information about the exact number of staff at NSUK at the moment. For current staffing information, please contact the university administration directly.',
+                'keywords' => 'how many staff, staff count, number of staff, employees, faculty count',
+                'category' => 'Administration',
+                'is_active' => true
             ]
         ];
 
