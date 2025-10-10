@@ -15,13 +15,15 @@ class NsukChatService
     private $groqModel;
     private $maxTokens;
     private $temperature;
+    private $serpApiKey;
 
     public function __construct()
     {
         $this->groqApiKey = config('services.groq.api_key');
         $this->groqModel = config('services.groq.model', 'llama3-8b-8192');
-        $this->maxTokens = config('services.groq.max_tokens', 300);
-        $this->temperature = config('services.groq.temperature', 0.8);
+        $this->maxTokens = (int) config('services.groq.max_tokens', 1000);
+        $this->temperature = (float) config('services.groq.temperature', 0.7);
+        $this->serpApiKey = config('services.serp.api_key');
         
         $this->contactNumber = config('services.nsuk.contact_number', '+234-XXX-XXX-XXXX');
         $this->supportEmail = config('services.nsuk.support_email', 'support@nsuk.edu.ng');
@@ -37,286 +39,190 @@ class NsukChatService
                 return $this->getDefaultResponse();
             }
 
-            Log::info('NSUK AI: Processing message - ' . substr($message, 0, 50) . '...');
+            Log::info('AI: Processing message - ' . substr($message, 0, 50) . '...');
 
-            // 1. CASUAL CONVERSATION - AI responds freely
-            if ($this->isCasualConversation($message)) {
-                $response = $this->handleCasualConversation($message);
-                Log::info('NSUK AI: Casual conversation handled');
-                return $response;
+            // Handle simple greetings
+            if ($this->isSimpleGreeting($message)) {
+                Log::info('AI: Simple greeting detected');
+                return $this->getGreetingResponse();
             }
 
-            // 2. NSUK-RELATED QUESTIONS - Check DB first, then AI within scope
-            if ($this->isNsukOrCSRelated($message)) {
-                // First, try to find in knowledge base
-                $knowledge = $this->searchKnowledgeBase($message);
-                
-                if ($knowledge) {
-                    // Found in DB - return DB answer (optionally enhanced)
-                    $response = $this->enhanceWithGroq($knowledge->answer, $message);
-                    Log::info('NSUK AI: Found in DB, enhanced with AI');
-                    return $response;
-                } else {
-                    // Not in DB - use AI but keep within NSUK scope
-                    $response = $this->handleNsukRelatedQuery($message);
-                    Log::info('NSUK AI: Not in DB, AI response within NSUK scope');
-                    return $response;
+            // STEP 1: Search database for answer
+            $dbAnswer = $this->searchDatabase($message);
+            if ($dbAnswer) {
+                Log::info('AI: Answer found in database');
+                return $this->formatResponse($dbAnswer);
+            }
+
+            // STEP 2: Search online for answer
+            $onlineAnswer = $this->searchOnline($message);
+            if ($onlineAnswer) {
+                Log::info('AI: Answer found online');
+                return $this->formatResponse($onlineAnswer);
+            }
+
+            // STEP 3: Fallback message
+            Log::info('AI: No answer found, returning fallback');
+            return $this->getFallbackResponse();
+            
+        } catch (\Exception $e) {
+            Log::error('AI Error: ' . $e->getMessage());
+            return $this->getFallbackResponse();
+        }
+    }
+
+    /**
+     * Search database for answer
+     */
+    private function searchDatabase(string $message): ?string
+    {
+        try {
+            $keywords = $this->extractKeywords($message);
+            
+            if (empty($keywords)) {
+                return null;
+            }
+
+            // Try exact question match first
+            $knowledge = NsukKnowledge::where('is_active', true)
+                ->where('question', 'LIKE', "%{$message}%")
+                ->first();
+            
+            if ($knowledge) {
+                return $knowledge->answer;
+            }
+
+            // Then try keyword matches with scoring
+            $results = NsukKnowledge::where('is_active', true)
+                ->where(function ($query) use ($keywords) {
+                    foreach ($keywords as $keyword) {
+                        $query->orWhere('question', 'LIKE', "%{$keyword}%")
+                              ->orWhere('keywords', 'LIKE', "%{$keyword}%");
+                    }
+                })
+                ->get();
+
+            // Score results based on keyword matches
+            $bestMatch = null;
+            $highestScore = 0;
+            $messageLower = strtolower($message);
+
+            foreach ($results as $result) {
+                $score = 0;
+                $questionLower = strtolower($result->question);
+                $keywordsLower = strtolower($result->keywords);
+
+                // Bonus points for similar question length (prevents partial matches)
+                $lengthDiff = abs(strlen($messageLower) - strlen($questionLower));
+                if ($lengthDiff < 10) {
+                    $score += 2;
+                }
+
+                // Count matching keywords
+                $matchedKeywords = 0;
+                foreach ($keywords as $keyword) {
+                    $keywordLower = strtolower($keyword);
+                    // Higher score for question matches
+                    if (strpos($questionLower, $keywordLower) !== false) {
+                        $score += 3;
+                        $matchedKeywords++;
+                    }
+                    // Lower score for keyword matches
+                    if (strpos($keywordsLower, $keywordLower) !== false) {
+                        $score += 1;
+                        $matchedKeywords++;
+                    }
+                }
+
+                // Require at least 50% of keywords to match
+                $matchRatio = count($keywords) > 0 ? $matchedKeywords / count($keywords) : 0;
+                if ($matchRatio < 0.5) {
+                    $score = 0; // Disqualify poor matches
+                }
+
+                if ($score > $highestScore) {
+                    $highestScore = $score;
+                    $bestMatch = $result;
                 }
             }
 
-            // 3. OFF-TOPIC - Polite redirect back to NSUK
-            $response = $this->getOffTopicResponse();
-            Log::info('NSUK AI: Off-topic question redirected');
-            return $response;
+            // Only return if we have a good match (at least 3 points)
+            return ($bestMatch && $highestScore >= 3) ? $bestMatch->answer : null;
             
         } catch (\Exception $e) {
-            Log::error('NSUK AI Error: ' . $e->getMessage());
-            return "Oops! 😅 I'm having some technical difficulties. Please try again or contact support at: " . $this->contactNumber;
+            Log::error('Database search error: ' . $e->getMessage());
+            return null;
         }
     }
 
-    private function isCasualConversation(string $message): bool
-    {
-        $message = strtolower(trim($message));
-        
-        $casualPatterns = [
-            // Greetings
-            'hello', 'hi', 'hey', 'hiya', 'good morning', 'good afternoon', 'good evening',
-            
-            // How are you
-            'how are you', 'how do you do', 'how\'s it going', 'what\'s up', 'how you doing',
-            
-            // About the AI
-            'who are you', 'what are you', 'what\'s your name', 'introduce yourself',
-            'tell me about yourself', 'what can you do',
-            
-            // Feelings and reactions
-            'i\'m happy', 'i\'m sad', 'i\'m excited', 'i\'m worried', 'i feel',
-            
-            // Thank you
-            'thank you', 'thanks', 'thank u', 'appreciate it',
-            
-            // Goodbye
-            'bye', 'goodbye', 'see you', 'take care',
-            
-            // Simple responses
-            'okay', 'ok', 'cool', 'nice', 'wow', 'great'
-        ];
-
-        foreach ($casualPatterns as $pattern) {
-            if (strpos($message, $pattern) !== false) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function handleCasualConversation(string $message): string
+    /**
+     * Search online using AI
+     */
+    private function searchOnline(string $message): ?string
     {
         try {
             if (!$this->groqApiKey) {
-                return $this->getStaticCasualResponse($message);
+                Log::warning('Groq API key not configured');
+                return null;
             }
 
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $this->groqApiKey,
                 'Content-Type' => 'application/json',
-            ])->timeout(30)->post('https://api.groq.com/openai/v1/chat/completions', [
+            ])->timeout(60)->retry(3, 1000)->post('https://api.groq.com/openai/v1/chat/completions', [
                 'model' => $this->groqModel,
                 'messages' => [
                     [
                         'role' => 'system',
-                        'content' => 'You are Jarvis, the NSUK Assistant AI - a very friendly, warm, and conversational chatbot for Nasarawa State University Keffi. 
-
-Your personality:
-- Warm, friendly, and enthusiastic about NSUK
-- Use emojis appropriately 
-- Be conversational and natural
-- Show genuine interest in helping students
-- Keep responses under 150 words
-- Always mention you\'re here to help with NSUK and Computer Science topics
-- Be encouraging and supportive
-
-This is casual conversation, so be friendly and personable while staying true to your NSUK identity.'
+                        'content' => 'You are a helpful AI assistant. Answer questions accurately and concisely. If the question is about NSUK (Nasarawa State University Keffi), provide relevant information when available.'
                     ],
                     [
                         'role' => 'user',
                         'content' => $message
                     ]
                 ],
-                'max_tokens' => $this->maxTokens,
-                'temperature' => $this->temperature,
+                'max_tokens' => (int) $this->maxTokens,
+                'temperature' => (float) $this->temperature,
             ]);
 
             if ($response->successful()) {
                 $data = $response->json();
                 if (isset($data['choices'][0]['message']['content'])) {
-                    $aiResponse = trim($data['choices'][0]['message']['content']);
-                    return $aiResponse . "\n\n✨ *Jarvis - NSUK Assistant*";
+                    return trim($data['choices'][0]['message']['content']);
                 }
             }
 
-            return $this->getStaticCasualResponse($message);
+            // Log detailed error information
+            Log::warning('Online search failed: ' . $response->status());
+            Log::warning('Error response: ' . $response->body());
+            return null;
 
         } catch (\Exception $e) {
-            Log::warning('Casual conversation AI failed: ' . $e->getMessage());
-            return $this->getStaticCasualResponse($message);
-        }
-    }
-
-    private function handleNsukRelatedQuery(string $message): string
-    {
-        try {
-            if (!$this->groqApiKey) {
-                return $this->getNoAnswerResponse();
-            }
-
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $this->groqApiKey,
-                'Content-Type' => 'application/json',
-            ])->timeout(30)->post('https://api.groq.com/openai/v1/chat/completions', [
-                'model' => $this->groqModel,
-                'messages' => [
-                    [
-                        'role' => 'system',
-                        'content' => 'You are Jarvis, the NSUK Assistant AI for Nasarawa State University Keffi. The user is asking about NSUK or Computer Science topics.
-
-IMPORTANT RULES:
-- ONLY answer questions about NSUK (Nasarawa State University Keffi) and Computer Science
-- If you don\'t have specific information, be helpful but stay within NSUK/CS scope
-- Provide contact information when you can\'t give specific details
-- Be warm, encouraging, and conversational
-- Use emojis appropriately
-- Keep responses under 200 words
-
-Contact info to provide:
-- Phone: ' . $this->contactNumber . '
-- Email: ' . $this->supportEmail . '
-- Website: ' . $this->website . '
-
-Remember: Stay focused on NSUK and Computer Science topics only!'
-                    ],
-                    [
-                        'role' => 'user',
-                        'content' => "User asked about NSUK/CS: " . $message
-                    ]
-                ],
-                'max_tokens' => $this->maxTokens + 50,
-                'temperature' => 0.7,
-            ]);
-
-            if ($response->successful()) {
-                $data = $response->json();
-                if (isset($data['choices'][0]['message']['content'])) {
-                    $aiResponse = trim($data['choices'][0]['message']['content']);
-                    return $aiResponse . "\n\n✨  *Jarvis - NSUK Assistant*";
-                }
-            }
-
-            return $this->getNoAnswerResponse();
-
-        } catch (\Exception $e) {
-            Log::warning('NSUK AI query failed: ' . $e->getMessage());
-            return $this->getNoAnswerResponse();
-        }
-    }
-
-    private function enhanceWithGroq(string $baseAnswer, string $userMessage): string
-    {
-        try {
-            if (!$this->groqApiKey) {
-                return $this->formatBaseResponse($baseAnswer);
-            }
-
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $this->groqApiKey,
-                'Content-Type' => 'application/json',
-            ])->timeout(30)->post('https://api.groq.com/openai/v1/chat/completions', [
-                'model' => $this->groqModel,
-                'messages' => [
-                    [
-                        'role' => 'system',
-                        'content' => 'You are Jarvis, NSUK Assistant AI. Take the provided NSUK information and make it more conversational, friendly, and engaging while keeping all important details.
-
-Make it:
-- Warm and conversational
-- Easy to understand
-- Encouraging and supportive
-- Use appropriate emojis
-- Keep under 250 words
-- Maintain all factual information'
-                    ],
-                    [
-                        'role' => 'user',
-                        'content' => "User asked: {$userMessage}\n\nNSUK Database Info: {$baseAnswer}\n\nPlease make this more conversational and engaging:"
-                    ]
-                ],
-                'max_tokens' => $this->maxTokens + 50,
-                'temperature' => 0.7,
-            ]);
-
-            if ($response->successful()) {
-                $data = $response->json();
-                if (isset($data['choices'][0]['message']['content'])) {
-                    $enhancedResponse = trim($data['choices'][0]['message']['content']);
-                    return $enhancedResponse . "\n\n📚 *From NSUK Database + AI Enhancement*";
-                }
-            }
-
-            return $this->formatBaseResponse($baseAnswer);
-
-        } catch (\Exception $e) {
-            Log::warning('AI enhancement failed: ' . $e->getMessage());
-            return $this->formatBaseResponse($baseAnswer);
-        }
-    }
-
-    private function isNsukOrCSRelated(string $message): bool
-    {
-        $message = strtolower($message);
-        
-        $nsukKeywords = [
-            // University related
-            'nsuk', 'nasarawa', 'keffi', 'university', 'admission', 'student', 'school',
-            'faculty', 'department', 'course', 'program', 'degree', 'undergraduate', 'postgraduate',
-            'semester', 'academic', 'lecture', 'exam', 'result', 'transcript', 'graduation',
-            'hostel', 'accommodation', 'library', 'campus', 'registration', 'fees', 'scholarship',
-            
-            // Computer Science related
-            'computer science', 'cs', 'programming', 'software', 'coding', 'development',
-            'algorithm', 'database', 'web development', 'artificial intelligence', 'ai',
-            'machine learning', 'data structure', 'java', 'python', 'javascript', 'html',
-            'css', 'php', 'sql', 'network', 'security', 'cybersecurity', 'mobile app',
-            'android', 'ios', 'react', 'angular', 'node', 'framework', 'api', 'backend',
-            'frontend', 'fullstack', 'git', 'github', 'linux', 'windows', 'server'
-        ];
-        
-        foreach ($nsukKeywords as $keyword) {
-            if (strpos($message, $keyword) !== false) {
-                return true;
-            }
-        }
-        
-        return false;
-    }
-
-    private function searchKnowledgeBase(string $message): ?NsukKnowledge
-    {
-        $keywords = $this->extractKeywords($message);
-        
-        if (empty($keywords)) {
+            Log::error('Online search error: ' . $e->getMessage());
             return null;
         }
-
-        return NsukKnowledge::where(function ($query) use ($keywords) {
-            foreach ($keywords as $keyword) {
-                $query->orWhere('question', 'LIKE', "%{$keyword}%")
-                      ->orWhere('keywords', 'LIKE', "%{$keyword}%")
-                      ->orWhere('answer', 'LIKE', "%{$keyword}%");
-            }
-        })->first();
     }
+
+    /**
+     * Format response for output
+     */
+    private function formatResponse(string $answer): string
+    {
+        return $answer;
+    }
+
+    /**
+     * Get fallback response when no answer is found
+     */
+    private function getFallbackResponse(): string
+    {
+        return "I apologize, but I don't have specific information about that at the moment. " .
+               "This information is currently not available.\n\n" .
+               "📞 Phone: " . $this->contactNumber . "\n" .
+               "📧 Email: " . $this->supportEmail . "\n" .
+               "🌐 Website: " . $this->website;
+    }
+
 
     private function extractKeywords(string $message): array
     {
@@ -337,57 +243,28 @@ Make it:
         return array_values($keywords);
     }
 
-    private function getStaticCasualResponse(string $message): string
+    private function isSimpleGreeting(string $message): bool
     {
         $message = strtolower(trim($message));
+        $greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings'];
         
-        if (preg_match('/\b(hello|hi|hey|good morning|good afternoon|good evening)\b/', $message)) {
-            return "Hello! 👋 I'm Jarvis, your friendly NSUK Assistant AI! I'm here to help you with everything about Nasarawa State University Keffi and Computer Science. How can I make your day better? 😊";
-        }
-        
-        if (preg_match('/\bhow.*you\b/', $message)) {
-            return "I'm doing fantastic, thank you for asking! 😊 I'm always excited to help NSUK students succeed. How are you doing? What can I help you with today regarding NSUK or Computer Science? 🎓";
-        }
-        
-        if (preg_match('/\b(thank|thanks)\b/', $message)) {
-            return "You're very welcome! 🤗 I'm always happy to help NSUK students like you. Feel free to ask me anything about the university or Computer Science anytime! 💫";
-        }
-        
-        return "Hi there! 😊 I'm Jarvis, your NSUK Assistant AI. I'm here to help you with everything related to Nasarawa State University Keffi and Computer Science. What would you like to know? 🚀";
+        return in_array($message, $greetings);
     }
 
-    private function formatBaseResponse(string $baseAnswer): string
+    private function getGreetingResponse(): string
     {
-        return $baseAnswer . "\n\n📞 Contact: " . $this->contactNumber . 
-               "\n📧 Email: " . $this->supportEmail . 
-               "\n🌐 Website: " . $this->website;
-    }
-
-    private function getNoAnswerResponse(): string
-    {
-        return "That's a great NSUK or Computer Science question! 🤔 While I don't have that specific information in my database right now, our support team can definitely help you!\n\n📞 Phone: " . $this->contactNumber . "\n📧 Email: " . $this->supportEmail . "\n🌐 Website: " . $this->website . "\n\nIs there anything else about NSUK or CS that I can help you with? 😊";
-    }
-
-    private function getOffTopicResponse(): string
-    {
-        $responses = [
-            "I appreciate your question! 😊 However, I'm specifically designed to help with Nasarawa State University Keffi and Computer Science topics! 🎓\n\nI'd love to chat about:\n• NSUK programs and admissions 🏫\n• Computer Science courses and careers 💻\n• University life and student services 📚\n\nWhat NSUK or CS topic can I help you with today? 🚀",
-            
-            "That's interesting, but I'm your dedicated NSUK and Computer Science specialist! 💫 I focus exclusively on helping with university and tech-related topics.\n\nLet's explore:\n• NSUK admission requirements 📝\n• Computer Science curriculum 🖥️\n• Programming and development 🔧\n• Campus life and facilities 🏛️\n\nWhat would you like to know about NSUK or CS? 😊"
-        ];
-        
-        return $responses[array_rand($responses)];
+        return "Hello! 👋 Welcome to NSUK AI Assistant.\n\n" .
+               "I'm here to help answer your questions about Nasarawa State University, Keffi. " .
+               "I can provide information about courses, events, admissions, and more!\n\n" .
+               "What would you like to know?";
     }
 
     private function getDefaultResponse(): string
     {
-        return "🎉 **Welcome to Jarvis - Your NSUK Assistant AI!** 🎉\n\n" .
-               "Hello! I'm absolutely thrilled to meet you! 😊✨\n\n" .
-               "I'm here to help you with everything related to:\n" .
-               "🏫 **Nasarawa State University Keffi (NSUK)**\n" .
-               "💻 **Computer Science and Technology**\n\n" .
-               "Whether you want to chat casually or need specific information about NSUK programs, admissions, CS courses, or university life - I'm your friendly companion! 🤗\n\n" .
-               "What would you like to talk about today? 🚀";
+        return "Hello! 👋 Welcome to NSUK AI Assistant.\n\n" .
+               "I'm here to help answer your questions. I'll search my database first, " .
+               "then look online if needed to provide you with accurate information.\n\n" .
+               "What would you like to know?";
     }
 
     public function getWelcomeMessage(): string
