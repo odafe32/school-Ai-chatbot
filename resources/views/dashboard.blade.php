@@ -267,17 +267,7 @@
 
                 // Only submit if there's content
                 if (textarea.value.trim().length > 0) {
-                    // Show loading state
-                    const sendButton = document.getElementById('sendButton');
-                    const sendIcon = document.getElementById('sendIcon');
-                    const loadingIcon = document.getElementById('loadingIcon');
-
-                    sendButton.disabled = true;
-                    sendButton.classList.add('opacity-50', 'cursor-not-allowed');
-                    sendButton.classList.remove('hover:bg-green-700');
-                    sendIcon.classList.add('hidden');
-                    loadingIcon.classList.remove('hidden');
-
+                    // Submit form without showing loading state for Enter key
                     form.submit();
                 }
             }

@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\NsukKnowledge;
+use App\Services\ChatbaseService;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -11,19 +12,13 @@ class NsukChatService
     private $contactNumber;
     private $supportEmail;
     private $website;
-    private $groqApiKey;
-    private $groqModel;
-    private $maxTokens;
-    private $temperature;
-    private $serpApiKey;
+    private $chatbaseService;
+    private $conversationId;
 
-    public function __construct()
+    public function __construct(ChatbaseService $chatbaseService)
     {
-        $this->groqApiKey = config('services.groq.api_key');
-        $this->groqModel = config('services.groq.model', 'llama3-8b-8192');
-        $this->maxTokens = (int) config('services.groq.max_tokens', 1000);
-        $this->temperature = (float) config('services.groq.temperature', 0.7);
-        $this->serpApiKey = config('services.serp.api_key');
+        $this->chatbaseService = $chatbaseService;
+        $this->conversationId = null;
         
         $this->contactNumber = config('services.nsuk.contact_number', '+234-XXX-XXX-XXXX');
         $this->supportEmail = config('services.nsuk.support_email', 'support@nsuk.edu.ng');
@@ -54,11 +49,11 @@ class NsukChatService
                 return $this->formatResponse($dbAnswer);
             }
 
-            // STEP 2: Search online for answer
-            $onlineAnswer = $this->searchOnline($message);
-            if ($onlineAnswer) {
-                Log::info('AI: Answer found online');
-                return $this->formatResponse($onlineAnswer);
+            // STEP 2: Search using Chatbase AI
+            $chatbaseAnswer = $this->searchWithChatbase($message);
+            if ($chatbaseAnswer) {
+                Log::info('AI: Answer found via Chatbase');
+                return $this->formatResponse($chatbaseAnswer);
             }
 
             // STEP 3: Fallback message
@@ -188,53 +183,36 @@ class NsukChatService
     }
 
     /**
-     * Search online using AI
+     * Search using Chatbase AI
      */
-    private function searchOnline(string $message): ?string
+    private function searchWithChatbase(string $message): ?string
     {
         try {
-            if (!$this->groqApiKey) {
-                Log::warning('Online search: Groq API key not configured');
+            if (!$this->chatbaseService->isConfigured()) {
+                Log::warning('Chatbase search: API not configured');
                 return null;
             }
 
-            Log::info('Online search: Starting search for message');
+            Log::info('Chatbase search: Starting search for message');
 
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $this->groqApiKey,
-                'Content-Type' => 'application/json',
-            ])->timeout(60)->retry(3, 1000)->post('https://api.groq.com/openai/v1/chat/completions', [
-                'model' => $this->groqModel,
-                'messages' => [
-                    [
-                        'role' => 'system',
-                        'content' => 'You are a helpful AI assistant. Answer questions accurately and concisely. If the question is about NSUK (Nasarawa State University Keffi), provide relevant information when available.'
-                    ],
-                    [
-                        'role' => 'user',
-                        'content' => $message
-                    ]
-                ],
-                'max_tokens' => (int) $this->maxTokens,
-                'temperature' => (float) $this->temperature,
-            ]);
+            // Send message to Chatbase with conversation context
+            $result = $this->chatbaseService->sendMessage($message, $this->conversationId);
 
-            if ($response->successful()) {
-                $data = $response->json();
-                if (isset($data['choices'][0]['message']['content'])) {
-                    $answer = trim($data['choices'][0]['message']['content']);
-                    Log::info('Online search: Successfully found answer');
-                    return $answer;
+            if ($result && isset($result['answer'])) {
+                // Store conversation ID for context in future messages
+                if (isset($result['conversationId'])) {
+                    $this->conversationId = $result['conversationId'];
                 }
+                
+                Log::info('Chatbase search: Successfully found answer');
+                return $result['answer'];
             }
 
-            // Log detailed error information
-            Log::warning('Online search: Failed with status ' . $response->status());
-            Log::warning('Online search: Error response: ' . $response->body());
+            Log::warning('Chatbase search: No answer received');
             return null;
 
         } catch (\Exception $e) {
-            Log::error('Online search error: ' . $e->getMessage());
+            Log::error('Chatbase search error: ' . $e->getMessage());
             return null;
         }
     }
@@ -310,6 +288,22 @@ class NsukChatService
 
     public function isConfigured(): bool
     {
-        return !empty($this->groqApiKey);
+        return $this->chatbaseService->isConfigured();
+    }
+
+    /**
+     * Set conversation ID for maintaining context
+     */
+    public function setConversationId(?string $conversationId): void
+    {
+        $this->conversationId = $conversationId;
+    }
+
+    /**
+     * Get current conversation ID
+     */
+    public function getConversationId(): ?string
+    {
+        return $this->conversationId;
     }
 }

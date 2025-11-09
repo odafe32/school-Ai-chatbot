@@ -35,7 +35,13 @@ return [
         ],
     ],
 
-    // Groq AI Configuration
+    // Chatbase AI Configuration (Primary AI System)
+    'chatbase' => [
+        'api_key' => env('CHATBASE_API_KEY'),
+        'chatbot_id' => env('CHATBASE_CHATBOT_ID'),
+    ],
+
+    // Groq AI Configuration (Legacy - kept for backward compatibility)
     'groq' => [
         'api_key' => env('GROQ_API_KEY'),
         'model' => env('GROQ_MODEL', 'llama3-8b-8192'),
