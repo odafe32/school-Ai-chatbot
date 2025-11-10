@@ -228,7 +228,7 @@ class NsukKnowledgeSeeder extends Seeder
                 'category' => 'About NSUK'
             ],
             [
-                'question' => 'What makes NSUK special?',
+                'question' => 'What makes NSUK special?',   
                 'answer' => 'NSUK is special for several reasons: it\'s the first state university in Nasarawa State, has the first female Vice-Chancellor (Prof. Sa\'adatu Hassan Liman), offers comprehensive programs across 11 faculties and 60 departments, maintains a strong commitment to quality education, and actively contributes to regional development. The university\'s motto "Knowledge for Development" reflects its dedication to societal advancement.',
                 'keywords' => 'special, first state university, female Vice-Chancellor, comprehensive programs, quality education, regional development, societal advancement',
                 'category' => 'About NSUK'

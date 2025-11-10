@@ -15,8 +15,8 @@
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
 
         <!-- Scripts -->
-        @vite(['resources/css/app.css', 'resources/js/app.js'])
-        
+        @vite([ 'resources/js/app.js'])
+
         <style>
             :root {
                 color-scheme: light;
@@ -277,7 +277,7 @@
     </head>
     <body class="app-body">
         <!-- Internet Connection Indicator -->
-    
+
 
         <div class="app-shell">
             <!-- Page Heading -->
@@ -332,31 +332,31 @@
 
                     this.isOnline = navigator.onLine;
                     this.checkInterval = null;
-                    
+
                     this.init();
                 }
-                
+
                 init() {
                     this.updateStatus(this.isOnline);
                     this.setupEventListeners();
                     this.startPeriodicCheck();
                 }
-                
+
                 setupEventListeners() {
                     window.addEventListener('online', () => {
                         this.isOnline = true;
                         this.updateStatus(true);
                     });
-                    
+
                     window.addEventListener('offline', () => {
                         this.isOnline = false;
                         this.updateStatus(false);
                     });
                 }
-                
+
                 updateStatus(online) {
                     this.indicator.className = 'connection-indicator';
-                    
+
                     if (online) {
                         this.indicator.classList.add('online');
                         this.text.textContent = 'Online';
@@ -367,31 +367,31 @@
                         this.indicator.setAttribute('aria-label', 'Connection status: Offline');
                     }
                 }
-                
+
                 async checkConnection() {
                     try {
                         // Show checking status
                         this.indicator.className = 'connection-indicator checking';
                         this.text.textContent = 'Checking...';
                         this.indicator.setAttribute('aria-label', 'Connection status: Checking');
-                        
+
                         // Try to fetch a small resource
                         const response = await fetch('/favicon.ico', {
                             method: 'HEAD',
                             cache: 'no-cache',
                             timeout: 5000
                         });
-                        
+
                         const online = response.ok;
                         this.isOnline = online;
                         this.updateStatus(online);
-                        
+
                     } catch (error) {
                         this.isOnline = false;
                         this.updateStatus(false);
                     }
                 }
-                
+
                 startPeriodicCheck() {
                     // Check connection every 30 seconds
                     this.checkInterval = setInterval(() => {
@@ -400,7 +400,7 @@
                         }
                     }, 30000);
                 }
-                
+
                 destroy() {
                     if (this.checkInterval) {
                         clearInterval(this.checkInterval);
@@ -409,29 +409,29 @@
                     window.removeEventListener('offline', this.updateStatus);
                 }
             }
-            
+
             // Initialize connection detector when DOM is loaded
             document.addEventListener('DOMContentLoaded', () => {
                 new ConnectionDetector();
             });
-            
+
             // Optional: Add toast notifications for connection changes
             let lastConnectionState = navigator.onLine;
-            
+
             window.addEventListener('online', () => {
                 if (!lastConnectionState) {
                     showConnectionToast('Connection restored!', 'success');
                 }
                 lastConnectionState = true;
             });
-            
+
             window.addEventListener('offline', () => {
                 if (lastConnectionState) {
                     showConnectionToast('Connection lost. Working offline.', 'warning');
                 }
                 lastConnectionState = false;
             });
-            
+
             function showConnectionToast(message, type) {
                 // Create toast element
                 const toast = document.createElement('div');
@@ -439,14 +439,14 @@
                     type === 'success' ? 'bg-green-500' : 'bg-yellow-500'
                 }`;
                 toast.textContent = message;
-                
+
                 document.body.appendChild(toast);
-                
+
                 // Slide in
                 setTimeout(() => {
                     toast.style.transform = 'translateX(0)';
                 }, 100);
-                
+
                 // Remove after 3 seconds
                 setTimeout(() => {
                     toast.style.transform = 'translateX(100%)';
